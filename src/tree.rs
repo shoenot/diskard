@@ -1,25 +1,26 @@
-use std::{error::Error, path::PathBuf, cmp::Reverse};
+use std::{cmp::Reverse, path::PathBuf, sync::atomic::AtomicU64};
+use boxcar::Vec as CVec;
 
 pub(crate) struct Node {
     pub(crate) name: String,
     pub(crate) is_dir: bool,
-    pub(crate) size: u64, 
+    pub(crate) size: AtomicU64,
     pub(crate) path: PathBuf,
-    pub(crate) children: Vec<usize>,
+    pub(crate) children: CVec<usize>,
     pub(crate) parent: Option<usize>,
     pub(crate) deleted: bool,
     pub(crate) unable_to_read: bool,
 }
 
 pub struct DirTree {
-    nodes: Vec<Node>,
+    nodes: CVec<Node>,
     root: usize,
 }
 
 impl DirTree {
     pub fn new(name: String, path: PathBuf) -> DirTree {
         let mut tree = DirTree {
-            nodes: Vec::new(),
+            nodes: CVec::new(),
             root: 0
         };
         tree.nodes.push(Node {
@@ -27,7 +28,7 @@ impl DirTree {
             is_dir: true,
             size: 0,
             path,
-            children: Vec::new(),
+            children: CVec::new(),
             parent: None,
             deleted: false,
             unable_to_read: false,

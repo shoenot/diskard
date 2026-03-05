@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+boxcar = "0.2.14"
 humansize = "2.1.3"
 thiserror = "2.0.18"
 trash = "5.2.5"
