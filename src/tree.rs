@@ -18,12 +18,14 @@ pub(crate) struct Node {
 
 pub struct DirTree {
     nodes: CVec<Node>,
+    root: usize,
 }
 
 impl DirTree {
     pub fn new(path: PathBuf) -> DirTree {
         let tree = DirTree {
             nodes: CVec::new(),
+            root: 0,
         };
         tree.nodes.push(Node {
             path,
@@ -35,6 +37,10 @@ impl DirTree {
             unable_to_read: false.into(),
         });
         tree
+    }
+
+    pub fn root(&self) -> usize {
+        self.root
     }
 
     pub fn add_node(&self, path: PathBuf, is_dir: bool, size: u64, parent_idx: usize) -> usize {

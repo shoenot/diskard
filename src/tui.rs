@@ -35,7 +35,7 @@ impl<'a> App<'a> {
         list_state.select(Some(0));
         Self {
             tree,
-            nav_stack: vec![(0, 0)],
+            nav_stack: vec![(tree.root(), 0)],
             list_state,
             modal: Modal::None,
         }

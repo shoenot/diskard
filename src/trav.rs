@@ -20,7 +20,8 @@ pub enum DiskardError {
 pub fn traverse_dir(path: PathBuf) -> Result<DirTree, DiskardError> {
     let tree = DirTree::new(path.clone());
     let ref_tree = Arc::new(tree);
-    traverse_recursive(ref_tree.clone(), path, 0);
+    let root = ref_tree.root();
+    traverse_recursive(ref_tree.clone(), path, root);
     match Arc::try_unwrap(ref_tree) {
         Ok(tree) => {
             Ok(tree)
