@@ -11,10 +11,10 @@ use humansize::{format_size, BINARY};
 fn print_tree(tree: &DirTree, node_idx: usize, depth: usize) {
     let node = tree.get_node(node_idx);
     let name = &node.name;
-    let size = format_size(node.size, BINARY);
+    let size = format_size(node.size.load(std::sync::atomic::Ordering::Relaxed), BINARY);
     println!("{:indent$}{name} ({size})", "", indent = depth * 2);
     if node.is_dir { 
-        for child_idx in &node.children {
+        for (_, child_idx) in &node.children {
             print_tree(tree, *child_idx, depth + 1);
         }
     }

@@ -1,4 +1,11 @@
-use std::{cmp::Reverse, path::PathBuf, sync::atomic::AtomicU64};
+use std::{
+    path::PathBuf, 
+    sync::atomic::{
+        AtomicU64,
+        AtomicBool,
+        Ordering,
+    }
+};
 use boxcar::Vec as CVec;
 
 pub(crate) struct Node {
@@ -8,8 +15,8 @@ pub(crate) struct Node {
     pub(crate) path: PathBuf,
     pub(crate) children: CVec<usize>,
     pub(crate) parent: Option<usize>,
-    pub(crate) deleted: bool,
-    pub(crate) unable_to_read: bool,
+    pub(crate) deleted: AtomicBool,
+    pub(crate) unable_to_read: AtomicBool,
 }
 
 pub struct DirTree {
@@ -19,64 +26,57 @@ pub struct DirTree {
 
 impl DirTree {
     pub fn new(name: String, path: PathBuf) -> DirTree {
-        let mut tree = DirTree {
+        let tree = DirTree {
             nodes: CVec::new(),
             root: 0
         };
         tree.nodes.push(Node {
             name,
             is_dir: true,
-            size: 0,
+            size: 0.into(),
             path,
             children: CVec::new(),
             parent: None,
-            deleted: false,
-            unable_to_read: false,
+            deleted: false.into(),
+            unable_to_read: false.into(),
         });
         tree
     }
 
-    pub fn add_node(&mut self, name: String, 
+    pub fn add_node(&self, name: String, 
         is_dir: bool, size: u64, path: PathBuf,
         parent_idx: usize) -> usize {
-        let new_node_idx = self.nodes.len();
         let new_node = Node {
             name,
             is_dir,
-            size,
+            size: size.into(),
             path,
-            children: Vec::new(),
+            children: CVec::new(),
             parent: Some(parent_idx),
-            deleted: false,
-            unable_to_read: false,
+            deleted: false.into(),
+            unable_to_read: false.into(),
         };
-        self.nodes.push(new_node);
+        let new_node_idx = self.nodes.push(new_node);
         self.nodes[parent_idx].children.push(new_node_idx);
         new_node_idx
     }
 
-    pub fn set_size(&mut self, idx: usize, size: u64) {
-        self.nodes[idx].size = size;
+    pub fn set_size(&self, idx: usize, size: u64) {
+        self.nodes[idx].size.store(size, Ordering::Relaxed);
     }
 
     pub fn get_node(&self, idx: usize) -> &Node {
         &self.nodes[idx]
     }
 
-    pub fn sort_children(&mut self, idx: usize) {
-        let mut children = self.nodes[idx].children.clone();
-        children.sort_by_key(|child| Reverse(self.nodes[*child].size));
-        self.nodes[idx].children = children;
+    pub fn set_unable_to_read(&self, idx: usize) {
+        self.nodes[idx].unable_to_read.store(true, Ordering::Relaxed);
     }
 
-    pub fn set_unable_to_read(&mut self, idx: usize) {
-        self.nodes[idx].unable_to_read = true;
-    }
-
-    pub fn delete_node(&mut self, idx: usize, propagate_size: bool) {
+    pub fn delete_node(&self, idx: usize, propagate_size: bool) {
         let (is_dir, children, parent_idx, node_size) = {
-            let node = &mut self.nodes[idx];
-            (node.is_dir, node.children.clone(), node.parent, node.size)
+            let node = &self.nodes[idx];
+            (node.is_dir, node.children.clone(), node.parent, node.size.load(Ordering::Relaxed))
         };
         if is_dir {
             for child_idx in children {
@@ -86,11 +86,11 @@ impl DirTree {
         if propagate_size {
             let mut current = parent_idx;
             while let Some(pidx) = current {
-                self.nodes[pidx].size -= node_size;
+                self.nodes[pidx].size.fetch_sub(node_size, Ordering::Relaxed);
                 current = self.nodes[pidx].parent;
             }
         }
-        self.nodes[idx].deleted = true;
+        self.nodes[idx].deleted.store(true, Ordering::Relaxed);
     }
 }
 
