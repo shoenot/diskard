@@ -21,8 +21,6 @@ fn main() {
         env::current_dir().expect("Could not get current directory.")
     });
 
-    let path = PathBuf::from(path);
-
     let tree = traverse_dir(path).unwrap();
     
     tui::run_tui(&tree).unwrap();
