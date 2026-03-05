@@ -292,8 +292,8 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             let full_name = node.path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "?".to_string());
-            let name = if full_name.len() > name_col {
-                format!("{}…", &full_name[..name_col.saturating_sub(1)])
+            let name = if full_name.chars().count() > name_col {
+                format!("{}…", full_name.chars().take(name_col.saturating_sub(1)).collect::<String>())
             } else {
                 format!("{:<width$}", full_name, width = name_col)
             };
