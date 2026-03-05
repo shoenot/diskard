@@ -1,4 +1,5 @@
 use crate::tree::*;
+use std::ffi::OsString;
 use std::fs::{
     DirEntry, read_dir, symlink_metadata
 };
@@ -21,7 +22,7 @@ pub enum DiskardError {
 }
 
 pub fn traverse_dir(path: PathBuf) -> Result<DirTree, DiskardError> {
-    let tree = DirTree::new("root".to_string(), path.clone());
+    let tree = DirTree::new(OsString::from("root"), path.clone());
     let ref_tree = Arc::new(tree);
     traverse_recursive(ref_tree.clone(), path, 0);
     match Arc::try_unwrap(ref_tree) {
@@ -52,26 +53,29 @@ fn traverse_recursive(tree: Arc<DirTree>, path: PathBuf, parent_idx: usize) {
                 },
             };
             let item_path = item.path();
-            let item_name = item.file_name().to_string_lossy().to_string();
-            let metadata = match symlink_metadata(&item_path) {
-                Ok(m) => m,
+            let item_name = item.file_name();
+            let file_type = match item.file_type() {
+                Ok(ft) => ft,
                 Err(_) => {
                     tree.set_unable_to_read(parent_idx);
                     continue;
                 },
             };
-            if metadata.is_file() {
-                let item_size = metadata.len();
+            if file_type.is_symlink() {
+                continue
+            } else if file_type.is_file() {
+                let item_size = match item.metadata() {
+                    Ok(m) => m.len(),
+                    Err(_) => continue,
+                };
                 tree.add_node(item_name, false, item_size, item_path, parent_idx);
-            } else if metadata.is_dir() {
+            } else if file_type.is_dir() {
                 let item_idx = tree.add_node(item_name, true, 0, item_path.clone(), parent_idx);
                 let tc = tree.clone();
                 s.spawn(move |_| {
                     traverse_recursive(tc, item_path, item_idx);
                 });
-            } else {
-                continue
-            }
+            } 
         }
     });
     let size: u64 = tree.get_node(parent_idx).children.iter()

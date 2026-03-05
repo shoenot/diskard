@@ -1,15 +1,12 @@
 use std::{
-    path::PathBuf, 
-    sync::atomic::{
-        AtomicU64,
-        AtomicBool,
-        Ordering,
+    ffi::OsString, path::PathBuf, sync::atomic::{
+        AtomicBool, AtomicU64, Ordering
     }
 };
 use boxcar::Vec as CVec;
 
 pub(crate) struct Node {
-    pub(crate) name: String,
+    pub(crate) name: OsString,
     pub(crate) is_dir: bool,
     pub(crate) size: AtomicU64,
     pub(crate) path: PathBuf,
@@ -25,7 +22,7 @@ pub struct DirTree {
 }
 
 impl DirTree {
-    pub fn new(name: String, path: PathBuf) -> DirTree {
+    pub fn new(name: OsString, path: PathBuf) -> DirTree {
         let tree = DirTree {
             nodes: CVec::new(),
             root: 0
@@ -43,7 +40,7 @@ impl DirTree {
         tree
     }
 
-    pub fn add_node(&self, name: String, 
+    pub fn add_node(&self, name: OsString, 
         is_dir: bool, size: u64, path: PathBuf,
         parent_idx: usize) -> usize {
         let new_node = Node {
