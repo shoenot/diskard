@@ -1,9 +1,7 @@
 use crate::tree::*;
-use std::ffi::OsString;
 use std::fs::{
-    DirEntry, read_dir, symlink_metadata
+    DirEntry, read_dir,
 };
-
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -13,8 +11,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DiskardError {
-    #[error("Permission denied: {0}")]
-    PermissionDenied(PathBuf),
     #[error("IO Error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("Internal Error")]
@@ -22,7 +18,7 @@ pub enum DiskardError {
 }
 
 pub fn traverse_dir(path: PathBuf) -> Result<DirTree, DiskardError> {
-    let tree = DirTree::new(OsString::from("root"), path.clone());
+    let tree = DirTree::new(path.clone());
     let ref_tree = Arc::new(tree);
     traverse_recursive(ref_tree.clone(), path, 0);
     match Arc::try_unwrap(ref_tree) {
@@ -53,7 +49,6 @@ fn traverse_recursive(tree: Arc<DirTree>, path: PathBuf, parent_idx: usize) {
                 },
             };
             let item_path = item.path();
-            let item_name = item.file_name();
             let file_type = match item.file_type() {
                 Ok(ft) => ft,
                 Err(_) => {
@@ -68,9 +63,9 @@ fn traverse_recursive(tree: Arc<DirTree>, path: PathBuf, parent_idx: usize) {
                     Ok(m) => m.len(),
                     Err(_) => continue,
                 };
-                tree.add_node(item_name, false, item_size, item_path, parent_idx);
+                tree.add_node(item_path, false, item_size, parent_idx);
             } else if file_type.is_dir() {
-                let item_idx = tree.add_node(item_name, true, 0, item_path.clone(), parent_idx);
+                let item_idx = tree.add_node(item_path.clone(), true, 0, parent_idx);
                 let tc = tree.clone();
                 s.spawn(move |_| {
                     traverse_recursive(tc, item_path, item_idx);

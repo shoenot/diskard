@@ -1,16 +1,15 @@
 use std::{
-    ffi::OsString, path::PathBuf, sync::atomic::{
+    path::PathBuf, 
+    sync::atomic::{
         AtomicBool, AtomicU64, Ordering
     }
 };
 use boxcar::Vec as CVec;
-use trash::delete;
 
 pub(crate) struct Node {
-    pub(crate) name: OsString,
+    pub(crate) path: PathBuf,
     pub(crate) is_dir: bool,
     pub(crate) size: AtomicU64,
-    pub(crate) path: PathBuf,
     pub(crate) children: CVec<usize>,
     pub(crate) parent: Option<usize>,
     pub(crate) deleted: AtomicBool,
@@ -19,20 +18,17 @@ pub(crate) struct Node {
 
 pub struct DirTree {
     nodes: CVec<Node>,
-    root: usize,
 }
 
 impl DirTree {
-    pub fn new(name: OsString, path: PathBuf) -> DirTree {
+    pub fn new(path: PathBuf) -> DirTree {
         let tree = DirTree {
             nodes: CVec::new(),
-            root: 0
         };
         tree.nodes.push(Node {
-            name,
+            path,
             is_dir: true,
             size: 0.into(),
-            path,
             children: CVec::new(),
             parent: None,
             deleted: false.into(),
@@ -41,14 +37,11 @@ impl DirTree {
         tree
     }
 
-    pub fn add_node(&self, name: OsString, 
-        is_dir: bool, size: u64, path: PathBuf,
-        parent_idx: usize) -> usize {
+    pub fn add_node(&self, path: PathBuf, is_dir: bool, size: u64, parent_idx: usize) -> usize {
         let new_node = Node {
-            name,
+            path,
             is_dir,
             size: size.into(),
-            path,
             children: CVec::new(),
             parent: Some(parent_idx),
             deleted: false.into(),
