@@ -4,6 +4,7 @@ use std::{
     }
 };
 use boxcar::Vec as CVec;
+use trash::delete;
 
 pub(crate) struct Node {
     pub(crate) name: OsString,

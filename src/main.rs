@@ -1,5 +1,6 @@
 mod tree;
 mod trav;
+mod tui;
 
 use std::env;
 use std::process;
@@ -31,6 +32,7 @@ fn main() {
     let path = PathBuf::from(&args[1]);
 
     let tree = traverse_dir(path).unwrap();
-
+    
+    tui::run_tui(&tree).unwrap();
     //print_tree(&tree, 0, 0);
 }
