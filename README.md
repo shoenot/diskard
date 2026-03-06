@@ -1,4 +1,4 @@
-# Diskard
+# diskard
 ### A fast TUI disk usage analyzer with trash/delete functionality.
 
 An [ncdu](https://dev.yorhel.nl/ncdu) inspired TUI disk usage analyzer, multithreaded for maximum speed.
