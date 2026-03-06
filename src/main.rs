@@ -24,4 +24,5 @@ fn main() {
     let tree = traverse_dir(path).unwrap();
     
     tui::run_tui(&tree).unwrap();
+    std::process::exit(0);
 }

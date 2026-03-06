@@ -15,6 +15,13 @@ pub enum DiskardError {
     IoError(#[from] std::io::Error),
     #[error("Internal Error")]
     InternalError,
+    #[error("Delete Failed: {0}")]
+    DeleteFailed(String),
+}
+
+pub enum DeleteMode {
+    Trash,
+    Permanent,
 }
 
 pub fn traverse_dir(path: PathBuf) -> Result<DirTree, DiskardError> {
@@ -78,4 +85,17 @@ fn traverse_recursive(tree: Arc<DirTree>, path: PathBuf, parent_idx: usize) {
         .map(|(_, node_idx)| tree.get_node(*node_idx).size.load(Ordering::Relaxed))
         .sum();
     tree.set_size(parent_idx, size);
+}
+
+pub fn delete_item(path: &PathBuf, mode: DeleteMode) -> Result<(), DiskardError> {
+    match mode {
+        DeleteMode::Trash => trash::delete(path).map_err(|e| DiskardError::DeleteFailed(e.to_string())),
+        DeleteMode::Permanent => {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).map_err(|e| DiskardError::DeleteFailed(e.to_string()))
+            } else {
+                std::fs::remove_file(path).map_err(|e| DiskardError::DeleteFailed(e.to_string()))
+            }
+        }
+    }
 }

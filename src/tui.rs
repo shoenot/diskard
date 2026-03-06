@@ -1,4 +1,10 @@
-use crate::tree::DirTree;
+use crate::{
+    trav::{
+        DeleteMode, 
+        delete_item,
+    }, 
+    tree::DirTree,
+};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -124,14 +130,14 @@ impl<'a> App<'a> {
             Modal::ConfirmTrash(idx) => {
                 let idx = *idx;
                 let path = self.tree.get_node(idx).path.clone();
-                match trash::delete(&path) {
+                match delete_item(&path, DeleteMode::Trash) {
                     Ok(_) => {
                         self.tree.delete_node(idx, true);
                         self.adjust_selection();
                         self.modal = Modal::None;
                     }
                     Err(e) => {
-                        self.modal = Modal::Error(format!("Trash failed: {}", e));
+                        self.modal = Modal::Error(e.to_string());
                     }
                 }
             }
@@ -139,19 +145,14 @@ impl<'a> App<'a> {
                 let idx = *idx;
                 let node = self.tree.get_node(idx);
                 let path = node.path.clone();
-                let result = if node.is_dir {
-                    std::fs::remove_dir_all(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                match result {
+                match delete_item(&path, DeleteMode::Permanent) {
                     Ok(_) => {
                         self.tree.delete_node(idx, true);
                         self.adjust_selection();
                         self.modal = Modal::None;
                     }
                     Err(e) => {
-                        self.modal = Modal::Error(format!("Delete failed: {}", e));
+                        self.modal = Modal::Error(e.to_string());
                     }
                 }
             }
@@ -219,7 +220,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             if key.kind == KeyEventKind::Press {
                 match &app.modal {
                     Modal::None => match key.code {
-                        KeyCode::Char('q') => std::process::exit(0),
+                        KeyCode::Char('q') => return Ok(()),
                         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                         KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => app.enter(),
