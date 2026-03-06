@@ -13,8 +13,7 @@ pub(crate) struct Node {
     pub(crate) children: CVec<usize>,
     pub(crate) parent: Option<usize>,
     pub(crate) deleted: AtomicBool,
-    pub(crate) unable_to_read: AtomicBool,
-}
+    pub(crate) unable_to_read: AtomicBool, }
 
 pub struct DirTree {
     nodes: CVec<Node>,
@@ -88,6 +87,72 @@ impl DirTree {
             }
         }
         self.nodes[idx].deleted.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn make_tree() -> DirTree {
+        DirTree::new(std::path::PathBuf::from("/test"))
+    }
+
+    #[test]
+    fn test_add_node_returns_correct_index() {
+        let tree = make_tree();
+        let idx = tree.add_node("/test/file_a".into(), false, 100, 0);
+        assert_eq!(idx, 1);
+        let idx2 = tree.add_node("/test/file_b".into(), false, 200, 0);
+        assert_eq!(idx2, 2);
+    }
+
+    #[test]
+    fn test_add_node_wires_parent() {
+        let tree = make_tree();
+        let idx = tree.add_node("/test/file_a".into(), false, 100, 0);
+        let children: Vec<usize> = tree.get_node(0).children.iter().map(|(_, &i)| i).collect();
+        assert!(children.contains(&idx));
+    }
+
+    #[test]
+    fn test_delete_node_sets_deleted_flag() {
+        let tree = make_tree();
+        let idx = tree.add_node("/test/file_a".into(), false, 100, 0);
+        tree.delete_node(idx, false);
+        assert!(tree.get_node(idx).deleted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_delete_node_propagates_size() {
+        let tree = make_tree();
+        tree.set_size(0, 300);
+        let idx = tree.add_node("/test/file_a".into(), false, 100, 0);
+        tree.delete_node(idx, true);
+        assert_eq!(tree.get_node(0).size.load(Ordering::Relaxed), 200);
+    }
+
+    #[test]
+    fn test_delete_node_recursive_marks_children() {
+        let tree = make_tree();
+        let dir_idx = tree.add_node("/test/subdir".into(), true, 0, 0);
+        let child_idx = tree.add_node("/test/subdir/file".into(), false, 50, dir_idx);
+        tree.delete_node(dir_idx, false);
+        assert!(tree.get_node(dir_idx).deleted.load(Ordering::Relaxed));
+        assert!(tree.get_node(child_idx).deleted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_delete_node_propagates_size_through_ancestors() {
+        let tree = make_tree();
+        tree.set_size(0, 150);
+        let dir_idx = tree.add_node("/test/subdir".into(), true, 100, 0);
+        let child_idx = tree.add_node("/test/subdir/file".into(), false, 100, dir_idx);
+        tree.delete_node(child_idx, true);
+        // Both dir and root should have size reduced
+        assert_eq!(tree.get_node(dir_idx).size.load(Ordering::Relaxed), 0);
+        assert_eq!(tree.get_node(0).size.load(Ordering::Relaxed), 50);
     }
 }
 
