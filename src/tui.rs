@@ -219,7 +219,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             if key.kind == KeyEventKind::Press {
                 match &app.modal {
                     Modal::None => match key.code {
-                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('q') => std::process::exit(0),
                         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                         KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => app.enter(),
