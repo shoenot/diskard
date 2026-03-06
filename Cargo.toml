@@ -11,5 +11,4 @@ thiserror = "2.0.18"
 trash = "5.2.5"
 ratatui = "0.29"
 crossterm = "0.28"
-clap = { version = "4.5.60", features = ["derive"] }
 tempfile = "3.26.0"
