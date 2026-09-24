@@ -1,4 +1,6 @@
 use crate::tree::DirTree;
+use crate::trav::traverse_dir;
+use crate::filetype::{breakdown, FileTypeTotal};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -13,6 +15,7 @@ use ratatui::{
     Terminal,
 };
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 enum Modal {
@@ -22,22 +25,32 @@ enum Modal {
     Error(String),
 }
 
-pub struct App<'a> {
-    tree: &'a DirTree,
+pub struct App {
+    tree: DirTree,
     nav_stack: Vec<(usize, usize)>,
     list_state: ListState,
     modal: Modal,
+    show_types: bool,
+    type_rows: Vec<FileTypeTotal>,
+    type_list_state: ListState,
+    refreshing: bool,
 }
 
-impl<'a> App<'a> {
-    pub fn new(tree: &'a DirTree) -> Self {
+impl App {
+    pub fn new(tree: DirTree) -> Self {
+        let root = tree.root();
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+
         Self {
             tree,
-            nav_stack: vec![(tree.root(), 0)],
+            nav_stack: vec![(root, 0)],
             list_state,
             modal: Modal::None,
+            show_types: false,
+            type_rows: Vec::new(),
+            type_list_state: ListState::default(),
+            refreshing: false,
         }
     }
 
@@ -50,18 +63,7 @@ impl<'a> App<'a> {
     }
 
     fn children(&self) -> Vec<usize> {
-        let node = self.tree.get_node(self.current_node_idx());
-        let mut children: Vec<usize> = node
-            .children
-            .iter()
-            .map(|(_, &idx)| idx)
-            .filter(|&idx| !self.tree.get_node(idx).deleted.load(Ordering::Relaxed))
-            .collect();
-        children.sort_by(|&a, &b| {
-            self.tree.get_node(b).size.load(Ordering::Relaxed)
-                .cmp(&self.tree.get_node(a).size.load(Ordering::Relaxed))
-        });
-        children
+        visible_children(&self.tree, self.current_node_idx())
     }
 
     fn move_up(&mut self) {
@@ -177,9 +179,107 @@ impl<'a> App<'a> {
             self.list_state.select(Some(new_selected));
         }
     }
+
+    fn open_types(&mut self) {
+        self.type_rows = breakdown(&self.tree, self.current_node_idx());
+        self.type_list_state.select((!self.type_rows.is_empty()).then_some(0));
+        self.show_types = true;
+    }
+
+    fn type_up(&mut self) {
+        if let Some(selected) = self.type_list_state.selected() {
+            self.type_list_state.select(Some(selected.saturating_sub(1)));
+        }
+    }
+
+    fn type_down(&mut self) {
+        if let Some(selected) = self.type_list_state.selected() {
+            let last = self.type_rows.len() - 1;
+            self.type_list_state.select(Some((selected + 1).min(last)));
+        }
+    }
+
+    fn refresh(&mut self) {
+        // save directory paths and selected child paths before indices become invalid.
+        let saved: Vec<(PathBuf, Option<PathBuf>, usize)> = self.nav_stack.iter()
+            .map(|&(dir_idx, row)| {
+                let directory_path = self.tree.get_node(dir_idx).path.clone();
+                let selected_path = visible_children(&self.tree, dir_idx)
+                    .get(row)
+                    .map(|&child_idx| self.tree.get_node(child_idx).path.clone());
+    
+                (directory_path, selected_path, row)
+            })
+            .collect();
+    
+        let root_path = self.tree.get_node(self.tree.root()).path.clone();
+        let new_tree = match traverse_dir(root_path) {
+            Ok(tree) => tree,
+            Err(error) => {
+                self.modal = Modal::Error(format!("Refresh failed: {error}"));
+                return;
+            }
+        };
+    
+        let mut new_stack = Vec::with_capacity(saved.len());
+        let mut current_idx = new_tree.root();
+    
+        for (level, (directory_path, selected_path, old_row)) in
+            saved.iter().enumerate()
+        {
+            if new_tree.get_node(current_idx).path.as_path()
+                != directory_path.as_path()
+            {
+                break;
+            }
+    
+            let children = visible_children(&new_tree, current_idx);
+            let selected_row = selected_path
+                .as_ref()
+                .and_then(|wanted| {
+                    children.iter().position(|&child_idx| {
+                        new_tree.get_node(child_idx).path.as_path() == wanted.as_path()
+                    })
+                })
+                .unwrap_or_else(|| (*old_row).min(children.len().saturating_sub(1)));
+    
+            new_stack.push((current_idx, selected_row));
+    
+            let Some((next_directory_path, _, _)) = saved.get(level + 1) else {
+                break;
+            };
+    
+            let Some(next_idx) = children.into_iter().find(|&child_idx| {
+                let child = new_tree.get_node(child_idx);
+                child.is_dir && child.path.as_path() == next_directory_path.as_path()
+            }) else {
+                break;
+            };
+    
+            current_idx = next_idx;
+        }
+    
+        if new_stack.is_empty() {
+            new_stack.push((new_tree.root(), 0));
+        }
+    
+        self.tree = new_tree;
+        self.nav_stack = new_stack;
+    
+        let selection = if self.children().is_empty() {
+            None
+        } else {
+            Some(self.selected_idx())
+        };
+        self.list_state.select(selection);
+    
+        self.type_rows.clear();
+        self.type_list_state.select(None);
+        self.modal = Modal::None;
+    }
 }
 
-pub fn run_tui(tree: &DirTree) -> io::Result<()> {
+pub fn run_tui(tree: DirTree) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -216,28 +316,48 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         terminal.draw(|f| ui(f, app))?;
 
         if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match &app.modal {
-                    Modal::None => match key.code {
-                        KeyCode::Char('q') => std::process::exit(0),
-                        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                        KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => app.enter(),
-                        KeyCode::Left |KeyCode::Backspace | KeyCode::Char('h') => app.go_back(),
-                        KeyCode::Char('d') => app.prompt_trash(),
-                        KeyCode::Char('D') => app.prompt_delete(),
-                        _ => {}
-                    },
-                    Modal::ConfirmTrash(_) | Modal::ConfirmDelete(_) => match key.code {
-                        KeyCode::Char('y') | KeyCode::Enter => app.confirm_action(),
-                        KeyCode::Char('n') | KeyCode::Esc => app.cancel_modal(),
-                        _ => {}
-                    },
-                    Modal::Error(_) => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => app.cancel_modal(),
-                        _ => {}
-                    },
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            if app.show_types {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('t') | KeyCode::Esc => app.show_types = false,
+                    KeyCode::Up | KeyCode::Char('k') => app.type_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.type_down(),
+                    _ => {}
                 }
+                continue;
+            }
+
+            match &app.modal {
+                Modal::None => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                    KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => app.enter(),
+                    KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => app.go_back(),
+                    KeyCode::Char('t') => app.open_types(),
+                    KeyCode::Char('d') => app.prompt_trash(),
+                    KeyCode::Char('D') => app.prompt_delete(),
+                    KeyCode::Char('r') => {
+                        app.refreshing = true;
+                        terminal.draw(|f| ui(f, app))?;
+                        app.refresh();
+                        app.refreshing = false;
+                    },
+                    _ => {}
+                },
+                Modal::ConfirmTrash(_) | Modal::ConfirmDelete(_) => match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => app.confirm_action(),
+                    KeyCode::Char('n') | KeyCode::Esc => app.cancel_modal(),
+                    _ => {}
+                },
+                Modal::Error(_) => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => app.cancel_modal(),
+                    _ => {}
+                },
             }
         }
     }
@@ -250,6 +370,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
+    if app.show_types { ui_types(f, app); return; }
     let area = f.area();
 
     let chunks = Layout::default()
@@ -263,7 +384,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // Header
     let current_node = app.tree.get_node(app.current_node_idx());
-    let header_text = current_node.path.to_string_lossy().to_string();
+    let header_text = format!("{} ({} files)", current_node.path.to_string_lossy(), current_node.file_count.load(Ordering::Relaxed));
     let header = Paragraph::new(header_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
@@ -271,36 +392,41 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // List
     let children = app.children();
-    let max_size = children.iter()
-        .map(|&idx| app.tree.get_node(idx).size.load(Ordering::Relaxed))
-        .max()
-        .unwrap_or(1)
-        .max(1);
-
-    let total = chunks[1].width.saturating_sub(4) as usize;
-    let size_col = 10;
-    let bar_col = (total * 25) / 100;
-    let name_col = total.saturating_sub(size_col + bar_col + 2);
-
-    let items: Vec<ListItem> = children
-        .iter()
+    let total_size = current_node.size.load(Ordering::Relaxed);
+    
+    let width = chunks[1].width.saturating_sub(4) as usize;
+    let size_col = if width >= 20 { 10 } else { 0 };
+    let percent_col = if width >= 33 { 7 } else { 0 };
+    let count_col = if width >= 52 { 12 } else { 0 };
+    let bar_col = if width >= 76 { width / 5 } else { 0 };
+    let name_col = width.saturating_sub(size_col + percent_col + count_col + bar_col + usize::from(bar_col > 0));
+    
+    let items: Vec<ListItem> = children.iter()
         .map(|&idx| {
             let node = app.tree.get_node(idx);
             let size = node.size.load(Ordering::Relaxed);
-            let size_str = format_size(size);
-
-            let full_name = node.path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
+            let share = if total_size == 0 { 0.0 } else { size as f64 / total_size as f64 };
+    
+            let full_name = node
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| "?".to_string());
-            let name = if full_name.chars().count() > name_col {
-                format!("{}…", full_name.chars().take(name_col.saturating_sub(1)).collect::<String>())
+    
+            let name = if name_col == 0 {
+                String::new()
+            } else if full_name.chars().count() > name_col {
+                format!(
+                    "{}…",
+                    full_name
+                        .chars()
+                        .take(name_col.saturating_sub(1))
+                        .collect::<String>()
+                )
             } else {
                 format!("{:<width$}", full_name, width = name_col)
             };
-
-            let filled = ((size as f64 / max_size as f64) * bar_col as f64) as usize;
-            let bar = format!("{:<width$}", "█".repeat(filled), width = bar_col);
-
+    
             let color = if node.unable_to_read.load(Ordering::Relaxed) {
                 Color::Red
             } else if node.is_dir {
@@ -308,17 +434,46 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             } else {
                 Color::White
             };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{:>width$} ", size_str, width = size_col - 1),
+    
+            let mut spans = vec![Span::styled(name, Style::default().fg(color))];
+    
+            if size_col > 0 {
+                spans.push(Span::styled(
+                    format!("{:>width$} ", format_size(size), width = size_col - 1),
                     Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(name, Style::default().fg(color)),
-                Span::styled(format!(" {}", bar), Style::default().fg(color)),
-            ]);
-
-            ListItem::new(line)
+                ));
+            }
+    
+            if percent_col > 0 {
+                spans.push(Span::raw(format!(
+                    "{:>width$} ",
+                    format!("{:.1}%", share * 100.0),
+                    width = percent_col - 1,
+                )));
+            }
+    
+            if count_col > 0 {
+                let count_text = if node.is_dir {
+                    format!("{} files", node.file_count.load(Ordering::Relaxed))
+                } else {
+                    String::new()
+                };
+    
+                spans.push(Span::styled(
+                    format!("{:>width$} ", count_text, width = count_col - 1),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+    
+            if bar_col > 0 {
+                let filled = (share * bar_col as f64).round() as usize;
+                spans.push(Span::styled(
+                    format!(" {}", "█".repeat(filled.min(bar_col))),
+                    Style::default().fg(color),
+                ));
+            }
+    
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -330,10 +485,14 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     f.render_stateful_widget(list, chunks[1], &mut app.list_state);
 
     // Footer
-    let footer_text = match &app.modal {
-        Modal::None => " ↑/k: up  ↓/j: down  ->/l/Enter: open  <-/h/Backspace: back  d: trash  D: delete  q: quit",
-        Modal::ConfirmTrash(_) | Modal::ConfirmDelete(_) => " y/Enter: confirm  n/Esc: cancel",
-        Modal::Error(_) => " Enter/Esc: dismiss",
+    let footer_text = if app.refreshing { " Refreshing..." } else {
+        match &app.modal {
+            Modal::None => " ↑/k: up  ↓/j: down  ->/l/Enter: open  <-/h/Backspace: back  t: types  r: refresh  d: trash  D: delete  q: quit",
+            Modal::ConfirmTrash(_) | Modal::ConfirmDelete(_) => {
+                " y/Enter: confirm  n/Esc: cancel"
+            }
+            Modal::Error(_) => " Enter/Esc: dismiss",
+        }
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL))
@@ -403,4 +562,131 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         }
         Modal::None => {}
     }
+}
+
+fn ui_types(f: &mut ratatui::Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(f.area());
+
+    let directory = app.tree.get_node(app.current_node_idx());
+    let total_size = directory.size.load(Ordering::Relaxed);
+    let file_count = directory.file_count.load(Ordering::Relaxed);
+
+    let header = Paragraph::new(format!(
+        "File types: {} ({} files)",
+        directory.path.to_string_lossy(),
+        file_count,
+    ))
+    .block(Block::default().borders(Borders::ALL))
+    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    f.render_widget(header, chunks[0]);
+
+    let width = chunks[1].width.saturating_sub(4) as usize;
+    let size_col = if width >= 20 { 10 } else { 0 };
+    let percent_col = if width >= 33 { 7 } else { 0 };
+    let count_col = if width >= 52 { 12 } else { 0 };
+    let bar_col = if width >= 76 { width / 5 } else { 0 };
+    let type_col = width.saturating_sub(
+        size_col + percent_col + count_col + bar_col + usize::from(bar_col > 0),
+    );
+
+    let items: Vec<ListItem> = app
+        .type_rows
+        .iter()
+        .map(|row| {
+            let name = if type_col == 0 {
+                String::new()
+            } else if row.extension.chars().count() > type_col {
+                format!(
+                    "{}…",
+                    row.extension
+                        .chars()
+                        .take(type_col.saturating_sub(1))
+                        .collect::<String>()
+                )
+            } else {
+                format!("{:<width$}", row.extension, width = type_col)
+            };
+
+            let share = if total_size == 0 {
+                0.0
+            } else {
+                row.size as f64 / total_size as f64
+            };
+
+            let mut spans = vec![Span::styled(name, Style::default().fg(Color::Blue))];
+
+            if size_col > 0 {
+                spans.push(Span::styled(
+                    format!("{:>width$} ", format_size(row.size), width = size_col - 1),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
+            if percent_col > 0 {
+                spans.push(Span::raw(format!(
+                    "{:>width$} ",
+                    format!("{:.1}%", share * 100.0),
+                    width = percent_col - 1,
+                )));
+            }
+
+            if count_col > 0 {
+                spans.push(Span::styled(
+                    format!(
+                        "{:>width$} ",
+                        format!("{} files", row.count),
+                        width = count_col - 1,
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            if bar_col > 0 {
+                let filled = (share * bar_col as f64).round() as usize;
+                spans.push(Span::styled(
+                    format!(" {}", "█".repeat(filled.min(bar_col))),
+                    Style::default().fg(Color::Blue),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Extensions by size "))
+        .highlight_style(Style::default().bg(Color::Black).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, chunks[1], &mut app.type_list_state);
+
+    let footer = Paragraph::new(" ↑/k: up  ↓/j: down  t/Esc: back  q: quit ")
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(footer, chunks[2]);
+}
+
+fn visible_children(tree: &DirTree, parent_idx: usize) -> Vec<usize> {
+    let node = tree.get_node(parent_idx);
+    let mut children: Vec<usize> = node
+        .children
+        .iter()
+        .map(|(_, &idx)| idx)
+        .filter(|&idx| !tree.get_node(idx).deleted.load(Ordering::Relaxed))
+        .collect();
+
+    children.sort_by(|&a, &b| {
+        tree.get_node(b)
+            .size
+            .load(Ordering::Relaxed)
+            .cmp(&tree.get_node(a).size.load(Ordering::Relaxed))
+    });
+
+    children
 }

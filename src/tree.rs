@@ -10,6 +10,7 @@ pub(crate) struct Node {
     pub(crate) path: PathBuf,
     pub(crate) is_dir: bool,
     pub(crate) size: AtomicU64,
+    pub(crate) file_count: AtomicU64,
     pub(crate) children: CVec<usize>,
     pub(crate) parent: Option<usize>,
     pub(crate) deleted: AtomicBool,
@@ -31,6 +32,7 @@ impl DirTree {
             path,
             is_dir: true,
             size: 0.into(),
+            file_count: 0.into(),
             children: CVec::new(),
             parent: None,
             deleted: false.into(),
@@ -48,6 +50,7 @@ impl DirTree {
             path,
             is_dir,
             size: size.into(),
+            file_count: (if is_dir { 0 } else { 1 }).into(),
             children: CVec::new(),
             parent: Some(parent_idx),
             deleted: false.into(),
@@ -62,6 +65,10 @@ impl DirTree {
         self.nodes[idx].size.store(size, Ordering::Relaxed);
     }
 
+    pub fn set_file_count(&self, idx: usize, count: u64) {
+        self.nodes[idx].file_count.store(count, Ordering::Relaxed);
+    }
+
     pub fn get_node(&self, idx: usize) -> &Node {
         &self.nodes[idx]
     }
@@ -70,20 +77,21 @@ impl DirTree {
         self.nodes[idx].unable_to_read.store(true, Ordering::Relaxed);
     }
 
-    pub fn delete_node(&self, idx: usize, propagate_size: bool) {
-        let (is_dir, children, parent_idx, node_size) = {
+    pub fn delete_node(&self, idx: usize, propagate_totals: bool) {
+        let (is_dir, children, parent_idx, node_size, node_file_count) = {
             let node = &self.nodes[idx];
-            (node.is_dir, node.children.clone(), node.parent, node.size.load(Ordering::Relaxed))
+            (node.is_dir, node.children.clone(), node.parent, node.size.load(Ordering::Relaxed), node.file_count.load(Ordering::Relaxed))
         };
         if is_dir {
             for child_idx in children {
                 self.delete_node(child_idx, false);
             }
         }
-        if propagate_size {
+        if propagate_totals {
             let mut current = parent_idx;
             while let Some(pidx) = current {
                 self.nodes[pidx].size.fetch_sub(node_size, Ordering::Relaxed);
+                self.nodes[pidx].file_count.fetch_sub(node_file_count, Ordering::Relaxed);
                 current = self.nodes[pidx].parent;
             }
         }

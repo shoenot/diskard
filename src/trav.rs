@@ -74,8 +74,13 @@ fn traverse_recursive(tree: Arc<DirTree>, path: PathBuf, parent_idx: usize) {
             } 
         }
     });
-    let size: u64 = tree.get_node(parent_idx).children.iter()
-        .map(|(_, node_idx)| tree.get_node(*node_idx).size.load(Ordering::Relaxed))
-        .sum();
+    let (size, file_count) = tree.get_node(parent_idx).children.iter().fold(
+        (0_u64, 0_u64),
+        |(size, count), (_, node_idx)| {
+            let child = tree.get_node(*node_idx);
+            (size + child.size.load(Ordering::Relaxed), count + child.file_count.load(Ordering::Relaxed))
+        },
+    );
     tree.set_size(parent_idx, size);
+    tree.set_file_count(parent_idx, file_count);
 }
