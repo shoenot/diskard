@@ -435,14 +435,16 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                 Color::White
             };
     
-            let mut spans = vec![Span::styled(name, Style::default().fg(color))];
-    
+            let mut spans = Vec::new();
+            
             if size_col > 0 {
                 spans.push(Span::styled(
                     format!("{:>width$} ", format_size(size), width = size_col - 1),
                     Style::default().fg(Color::Yellow),
                 ));
             }
+            
+            spans.push(Span::styled(name, Style::default().fg(color)));
     
             if percent_col > 0 {
                 spans.push(Span::raw(format!(
@@ -620,14 +622,16 @@ fn ui_types(f: &mut ratatui::Frame, app: &mut App) {
                 row.size as f64 / total_size as f64
             };
 
-            let mut spans = vec![Span::styled(name, Style::default().fg(Color::Blue))];
-
+            let mut spans = Vec::new();
+            
             if size_col > 0 {
                 spans.push(Span::styled(
                     format!("{:>width$} ", format_size(row.size), width = size_col - 1),
                     Style::default().fg(Color::Yellow),
                 ));
             }
+            
+            spans.push(Span::styled(name, Style::default().fg(Color::Blue)));
 
             if percent_col > 0 {
                 spans.push(Span::raw(format!(
