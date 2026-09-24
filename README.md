@@ -1,5 +1,5 @@
 # diskard
-### A fast TUI disk usage analyzer with trash/delete functionality.
+### A fast TUI disk usage analyzer with trash/delete functionality and breakdowns by file extension.
 
 An [ncdu](https://dev.yorhel.nl/ncdu) inspired TUI disk usage analyzer, multithreaded for maximum speed.
 Features support for native filesystem trash/recycle bin, so you don't have to permanently delete things immediately if you don't want to.
