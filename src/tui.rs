@@ -397,7 +397,17 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let width = chunks[1].width.saturating_sub(4) as usize;
     let size_col = if width >= 20 { 10 } else { 0 };
     let percent_col = if width >= 33 { 7 } else { 0 };
-    let count_col = if width >= 52 { 12 } else { 0 };
+    let count_col = if width >= 52 {
+        let max_count = children.iter()
+            .filter_map(|&idx| {
+                let node = app.tree.get_node(idx);
+                node.is_dir.then(|| node.file_count.load(Ordering::Relaxed))
+            })
+            .max()
+            .unwrap_or(0);
+    
+        (format!("{max_count} files").len() + 1).max(12)
+    } else { 0 };
     let bar_col = if width >= 76 { width / 5 } else { 0 };
     let name_col = width.saturating_sub(size_col + percent_col + count_col + bar_col + usize::from(bar_col > 0));
     
@@ -592,7 +602,10 @@ fn ui_types(f: &mut ratatui::Frame, app: &mut App) {
     let width = chunks[1].width.saturating_sub(4) as usize;
     let size_col = if width >= 20 { 10 } else { 0 };
     let percent_col = if width >= 33 { 7 } else { 0 };
-    let count_col = if width >= 52 { 12 } else { 0 };
+    let count_col = if width >= 52 {
+        let max_count = app.type_rows.iter().map(|row| row.count).max().unwrap_or(0);
+        (format!("{max_count} files").len() + 1).max(12)
+    } else { 0 };
     let bar_col = if width >= 76 { width / 5 } else { 0 };
     let type_col = width.saturating_sub(
         size_col + percent_col + count_col + bar_col + usize::from(bar_col > 0),
