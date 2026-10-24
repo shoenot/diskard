@@ -14,14 +14,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 enum Modal {
     None,
-    ConfirmTrash(usize),
-    ConfirmDelete(usize),
+    ConfirmTrash(Vec<usize>),
+    ConfirmDelete(Vec<usize>),
     Error(String),
 }
 
@@ -30,6 +31,7 @@ pub struct App {
     nav_stack: Vec<(usize, usize)>,
     list_state: ListState,
     modal: Modal,
+    selected: HashSet<usize>,
     show_types: bool,
     type_rows: Vec<FileTypeTotal>,
     type_list_state: ListState,
@@ -47,6 +49,7 @@ impl App {
             nav_stack: vec![(root, 0)],
             list_state,
             modal: Modal::None,
+            selected: HashSet::new(),
             show_types: false,
             type_rows: Vec::new(),
             type_list_state: ListState::default(),
@@ -105,60 +108,90 @@ impl App {
         }
     }
 
-    fn prompt_trash(&mut self) {
+    fn toggle_select(&mut self) {
         let children = self.children();
-        if children.is_empty() { return; }
         let selected = self.selected_idx();
         if selected >= children.len() { return; }
-        self.modal = Modal::ConfirmTrash(children[selected]);
+        let child_idx = children[selected];
+        if !self.selected.remove(&child_idx) {
+            self.selected.insert(child_idx);
+        }
+    }
+
+    fn targets(&self) -> Vec<usize> {
+        let mut candidates: Vec<usize> = if self.selected.is_empty() {
+            let children = self.children();
+            children.get(self.selected_idx()).copied().into_iter().collect()
+        } else {
+            self.selected.iter().copied().collect()
+        };
+        candidates.retain(|&idx| !self.tree.get_node(idx).deleted.load(Ordering::Relaxed));
+        candidates.sort();
+
+        let chosen: HashSet<usize> = candidates.iter().copied().collect();
+        candidates.retain(|&idx| {
+            let mut current = self.tree.get_node(idx).parent;
+            while let Some(parent_idx) = current {
+                if chosen.contains(&parent_idx) { return false; }
+                current = self.tree.get_node(parent_idx).parent;
+            }
+            true
+        });
+        candidates
+    }
+
+    fn prompt_trash(&mut self) {
+        let targets = self.targets();
+        if targets.is_empty() { return; }
+        self.modal = Modal::ConfirmTrash(targets);
     }
 
     fn prompt_delete(&mut self) {
-        let children = self.children();
-        if children.is_empty() { return; }
-        let selected = self.selected_idx();
-        if selected >= children.len() { return; }
-        self.modal = Modal::ConfirmDelete(children[selected]);
+        let targets = self.targets();
+        if targets.is_empty() { return; }
+        self.modal = Modal::ConfirmDelete(targets);
     }
 
     fn confirm_action(&mut self) {
         match &self.modal {
-            Modal::ConfirmTrash(idx) => {
-                let idx = *idx;
-                let path = self.tree.get_node(idx).path.clone();
-                match trash::delete(&path) {
-                    Ok(_) => {
-                        self.tree.delete_node(idx, true);
-                        self.adjust_selection();
-                        self.modal = Modal::None;
-                    }
-                    Err(e) => {
-                        self.modal = Modal::Error(format!("Trash failed: {}", e));
-                    }
-                }
+            Modal::ConfirmTrash(idxs) => {
+                let idxs = idxs.clone();
+                self.run_batch(idxs, true);
             }
-            Modal::ConfirmDelete(idx) => {
-                let idx = *idx;
-                let node = self.tree.get_node(idx);
-                let path = node.path.clone();
-                let result = if node.is_dir {
-                    std::fs::remove_dir_all(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                match result {
-                    Ok(_) => {
-                        self.tree.delete_node(idx, true);
-                        self.adjust_selection();
-                        self.modal = Modal::None;
-                    }
-                    Err(e) => {
-                        self.modal = Modal::Error(format!("Delete failed: {}", e));
-                    }
-                }
+            Modal::ConfirmDelete(idxs) => {
+                let idxs = idxs.clone();
+                self.run_batch(idxs, false);
             }
             _ => {}
         }
+    }
+
+    fn run_batch(&mut self, idxs: Vec<usize>, to_trash: bool) {
+        for idx in idxs {
+            let node = self.tree.get_node(idx);
+            let path = node.path.clone();
+            let result = if to_trash {
+                trash::delete(&path).map_err(|e| e.to_string())
+            } else if node.is_dir {
+                std::fs::remove_dir_all(&path).map_err(|e| e.to_string())
+            } else {
+                std::fs::remove_file(&path).map_err(|e| e.to_string())
+            };
+            match result {
+                Ok(_) => {
+                    self.tree.delete_node(idx, true);
+                    self.selected.remove(&idx);
+                }
+                Err(e) => {
+                    self.adjust_selection();
+                    let action = if to_trash { "Trash" } else { "Delete" };
+                    self.modal = Modal::Error(format!("{} failed: {}", action, e));
+                    return;
+                }
+            }
+        }
+        self.adjust_selection();
+        self.modal = Modal::None;
     }
 
     fn cancel_modal(&mut self) {
@@ -265,6 +298,7 @@ impl App {
     
         self.tree = new_tree;
         self.nav_stack = new_stack;
+        self.selected.clear();
     
         let selection = if self.children().is_empty() {
             None
@@ -339,6 +373,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => app.enter(),
                     KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => app.go_back(),
                     KeyCode::Char('t') => app.open_types(),
+                    KeyCode::Char(' ') => app.toggle_select(),
                     KeyCode::Char('d') => app.prompt_trash(),
                     KeyCode::Char('D') => app.prompt_delete(),
                     KeyCode::Char('r') => {
@@ -384,7 +419,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // Header
     let current_node = app.tree.get_node(app.current_node_idx());
-    let header_text = format!("{} ({} files)", current_node.path.to_string_lossy(), current_node.file_count.load(Ordering::Relaxed));
+    let mut header_text = format!("{} ({} files)", current_node.path.to_string_lossy(), current_node.file_count.load(Ordering::Relaxed));
+    if !app.selected.is_empty() {
+        header_text.push_str(&format!(" [{} selected]", app.selected.len()));
+    }
     let header = Paragraph::new(header_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
@@ -394,7 +432,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let children = app.children();
     let total_size = current_node.size.load(Ordering::Relaxed);
     
-    let width = chunks[1].width.saturating_sub(4) as usize;
+    let width = chunks[1].width.saturating_sub(6) as usize;
     let size_col = if width >= 20 { 10 } else { 0 };
     let percent_col = if width >= 33 { 7 } else { 0 };
     let count_col = if width >= 52 {
@@ -446,6 +484,11 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             };
     
             let mut spans = Vec::new();
+
+            spans.push(Span::styled(
+                if app.selected.contains(&idx) { "● " } else { "  " },
+                Style::default().fg(Color::Green),
+            ));
             
             if size_col > 0 {
                 spans.push(Span::styled(
@@ -499,7 +542,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     // Footer
     let footer_text = if app.refreshing { " Refreshing..." } else {
         match &app.modal {
-            Modal::None => " ↑/k: up  ↓/j: down  ->/l/Enter: open  <-/h/Backspace: back  t: types  r: refresh  d: trash  D: delete  q: quit",
+            Modal::None => " ↑/k: up  ↓/j: down  ->/l/Enter: open  <-/h/Backspace: back  t: types  r: refresh  space: select  d: trash  D: delete  q: quit",
             Modal::ConfirmTrash(_) | Modal::ConfirmDelete(_) => {
                 " y/Enter: confirm  n/Esc: cancel"
             }
@@ -513,14 +556,22 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // Modal overlays
     match &app.modal {
-        Modal::ConfirmTrash(idx) | Modal::ConfirmDelete(idx) => {
+        Modal::ConfirmTrash(idxs) | Modal::ConfirmDelete(idxs) => {
             let is_trash = matches!(&app.modal, Modal::ConfirmTrash(_));
-            let node = app.tree.get_node(*idx);
-            let name = node.path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "?".to_string());
+            let name = if idxs.len() == 1 {
+                let node = app.tree.get_node(idxs[0]);
+                let name = node.path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("\"{}\"", name)
+            } else {
+                let total: u64 = idxs.iter()
+                    .map(|&idx| app.tree.get_node(idx).size.load(Ordering::Relaxed))
+                    .sum();
+                format!("{} items ({})", idxs.len(), format_size(total))
+            };
             let action = if is_trash { "Move to trash" } else { "Permanently delete" };
-            let msg = format!(" {} \"{}\"? ", action, name);
+            let msg = format!(" {} {}? ", action, name);
             let width = (msg.len() as u16 + 4).max(36).min(area.width - 4);
             let dialog_area = centered_rect(width, 5, area);
 
